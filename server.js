@@ -1,41 +1,55 @@
 const WebSocket = require('ws');
+const { MongoClient } = require('mongodb');
+
+const mongoUrl = 'mongodb+srv://hbfix23:Horizan01.@cluster0.u4q0qas.mongodb.net/?appName=Cluster0';
+const dbName = 'yogdzewa';
+
+let db;
+let usersCol;
+let friendRequestsCol;
+let friendsCol;
+let messagesCol;
+
+MongoClient.connect(mongoUrl).then(client => {
+    db = client.db(dbName);
+    usersCol = db.collection('users');
+    friendRequestsCol = db.collection('friendRequests');
+    friendsCol = db.collection('friends');
+    messagesCol = db.collection('messages');
+    console.log('MongoDB baglandi!');
+});
 
 const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
-
 const clients = new Map();
-const users = new Map();
-const friendRequests = new Map();
-const friends = new Map();
 
 wss.on('connection', (ws) => {
     let userId = null;
 
-    ws.on('message', (message) => {
+    ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
 
             if (data.type === 'register_user') {
                 const { username, password, securityQuestion, securityAnswer } = data;
-                if (users.has(username)) {
+                const existing = await usersCol.findOne({ username });
+                if (existing) {
                     ws.send(JSON.stringify({ type: 'register_user_result', success: false, message: 'Bu kullanici adi zaten kullaniliyor' }));
                 } else {
-                    users.set(username, { password, securityQuestion, securityAnswer });
-                    friendRequests.set(username, []);
-                    friends.set(username, []);
+                    await usersCol.insertOne({ username, password, securityQuestion, securityAnswer });
                     ws.send(JSON.stringify({ type: 'register_user_result', success: true }));
                 }
             }
 
             else if (data.type === 'login_user') {
                 const { username, password } = data;
-                const user = users.get(username);
-                if (user && user.password === password) {
+                const user = await usersCol.findOne({ username, password });
+                if (user) {
                     userId = username;
                     clients.set(userId, ws);
                     ws.send(JSON.stringify({ type: 'login_user_result', success: true }));
-                    const pending = friendRequests.get(username) || [];
+                    const pending = await friendRequestsCol.find({ targetId: username }).toArray();
                     if (pending.length > 0) {
-                        ws.send(JSON.stringify({ type: 'pending_requests', requests: pending }));
+                        ws.send(JSON.stringify({ type: 'pending_requests', requests: pending.map(r => r.fromId) }));
                     }
                 } else {
                     ws.send(JSON.stringify({ type: 'login_user_result', success: false, message: 'Kullanici adi veya sifre yanlis' }));
@@ -46,31 +60,29 @@ wss.on('connection', (ws) => {
                 userId = data.userId;
                 clients.set(userId, ws);
                 ws.send(JSON.stringify({ type: 'registered', userId }));
+                const pending = await friendRequestsCol.find({ targetId: userId }).toArray();
+                if (pending.length > 0) {
+                    ws.send(JSON.stringify({ type: 'pending_requests', requests: pending.map(r => r.fromId) }));
+                }
             }
 
             else if (data.type === 'get_pending_requests') {
-                const pending = friendRequests.get(userId) || [];
-                ws.send(JSON.stringify({ type: 'pending_requests', requests: pending }));
+                const pending = await friendRequestsCol.find({ targetId: userId }).toArray();
+                ws.send(JSON.stringify({ type: 'pending_requests', requests: pending.map(r => r.fromId) }));
             }
 
             else if (data.type === 'search_users') {
                 const query = data.query.toLowerCase();
-                const results = [];
-                for (const [username] of users) {
-                    if (username.toLowerCase().includes(query) && username !== userId) {
-                        results.push(username);
-                    }
-                }
-                ws.send(JSON.stringify({ type: 'search_results', results }));
+                const results = await usersCol.find({ username: { $regex: query, $options: 'i' } }).toArray();
+                const filtered = results.map(u => u.username).filter(u => u !== userId);
+                ws.send(JSON.stringify({ type: 'search_results', results: filtered }));
             }
 
             else if (data.type === 'friend_request') {
                 const targetId = data.targetId;
-                if (!friendRequests.has(targetId)) friendRequests.set(targetId, []);
-                const requests = friendRequests.get(targetId);
-                if (!requests.includes(userId)) {
-                    requests.push(userId);
-                    friendRequests.set(targetId, requests);
+                const existing = await friendRequestsCol.findOne({ fromId: userId, targetId });
+                if (!existing) {
+                    await friendRequestsCol.insertOne({ fromId: userId, targetId });
                 }
                 const targetWs = clients.get(targetId);
                 if (targetWs) {
@@ -81,14 +93,9 @@ wss.on('connection', (ws) => {
 
             else if (data.type === 'accept_friend') {
                 const fromId = data.fromId;
-                if (!friends.has(userId)) friends.set(userId, []);
-                if (!friends.has(fromId)) friends.set(fromId, []);
-                const myFriends = friends.get(userId);
-                if (!myFriends.includes(fromId)) myFriends.push(fromId);
-                const theirFriends = friends.get(fromId);
-                if (!theirFriends.includes(userId)) theirFriends.push(userId);
-                const requests = friendRequests.get(userId) || [];
-                friendRequests.set(userId, requests.filter(r => r !== fromId));
+                await friendsCol.updateOne({ userId }, { $addToSet: { friends: fromId } }, { upsert: true });
+                await friendsCol.updateOne({ userId: fromId }, { $addToSet: { friends: userId } }, { upsert: true });
+                await friendRequestsCol.deleteOne({ fromId, targetId: userId });
                 const fromWs = clients.get(fromId);
                 if (fromWs) {
                     fromWs.send(JSON.stringify({ type: 'friend_accepted', byId: userId }));
@@ -98,26 +105,34 @@ wss.on('connection', (ws) => {
 
             else if (data.type === 'reject_friend') {
                 const fromId = data.fromId;
-                const requests = friendRequests.get(userId) || [];
-                friendRequests.set(userId, requests.filter(r => r !== fromId));
+                await friendRequestsCol.deleteOne({ fromId, targetId: userId });
                 ws.send(JSON.stringify({ type: 'friend_rejected', fromId }));
             }
 
             else if (data.type === 'get_friends') {
-                const myFriends = friends.get(userId) || [];
-                ws.send(JSON.stringify({ type: 'friends_list', friends: myFriends }));
+                const doc = await friendsCol.findOne({ userId });
+                ws.send(JSON.stringify({ type: 'friends_list', friends: doc ? doc.friends : [] }));
             }
 
             else if (data.type === 'message') {
-                const targetWs = clients.get(data.targetId);
+                const { targetId, content } = data;
+                const timestamp = Date.now();
+                await messagesCol.insertOne({ fromId: userId, targetId, content, timestamp });
+                const targetWs = clients.get(targetId);
                 if (targetWs) {
-                    targetWs.send(JSON.stringify({
-                        type: 'message',
-                        fromId: userId,
-                        content: data.content,
-                        timestamp: Date.now()
-                    }));
+                    targetWs.send(JSON.stringify({ type: 'message', fromId: userId, content, timestamp }));
                 }
+            }
+
+            else if (data.type === 'get_messages') {
+                const { targetId } = data;
+                const msgs = await messagesCol.find({
+                    $or: [
+                        { fromId: userId, targetId },
+                        { fromId: targetId, targetId: userId }
+                    ]
+                }).sort({ timestamp: 1 }).toArray();
+                ws.send(JSON.stringify({ type: 'messages_history', messages: msgs }));
             }
 
             else if (data.type === 'offer' || data.type === 'answer' || data.type === 'ice-candidate') {
@@ -133,9 +148,7 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        if (userId) {
-            clients.delete(userId);
-        }
+        if (userId) clients.delete(userId);
     });
 });
 
