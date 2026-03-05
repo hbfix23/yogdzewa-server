@@ -3,7 +3,7 @@ const WebSocket = require('ws');
 const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
 const clients = new Map();
-const users = new Map(); // username -> { password, securityQuestion, securityAnswer }
+const users = new Map();
 
 wss.on('connection', (ws) => {
     let userId = null;
@@ -12,7 +12,6 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
 
-            // Kullanici kayit
             if (data.type === 'register_user') {
                 const { username, password, securityQuestion, securityAnswer } = data;
                 if (users.has(username)) {
@@ -24,7 +23,6 @@ wss.on('connection', (ws) => {
                 }
             }
 
-            // Kullanici giris
             else if (data.type === 'login_user') {
                 const { username, password } = data;
                 const user = users.get(username);
@@ -38,7 +36,6 @@ wss.on('connection', (ws) => {
                 }
             }
 
-            // Kullanici ara
             else if (data.type === 'search_users') {
                 const query = data.query.toLowerCase();
                 const results = [];
@@ -50,7 +47,6 @@ wss.on('connection', (ws) => {
                 ws.send(JSON.stringify({ type: 'search_results', results }));
             }
 
-            // Baglanti kaydi
             else if (data.type === 'register') {
                 userId = data.userId;
                 clients.set(userId, ws);
@@ -58,7 +54,6 @@ wss.on('connection', (ws) => {
                 ws.send(JSON.stringify({ type: 'registered', userId }));
             }
 
-            // Mesaj gonder
             else if (data.type === 'message') {
                 const targetWs = clients.get(data.targetId);
                 if (targetWs) {
@@ -71,7 +66,6 @@ wss.on('connection', (ws) => {
                 }
             }
 
-            // WebRTC
             else if (data.type === 'offer' || data.type === 'answer' || data.type === 'ice-candidate') {
                 const targetWs = clients.get(data.targetId);
                 if (targetWs) {
