@@ -4,8 +4,8 @@ const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
 const clients = new Map();
 const users = new Map();
-const friendRequests = new Map(); // username -> [pending requests]
-const friends = new Map(); // username -> [friends list]
+const friendRequests = new Map();
+const friends = new Map();
 
 wss.on('connection', (ws) => {
     let userId = null;
@@ -22,7 +22,6 @@ wss.on('connection', (ws) => {
                     users.set(username, { password, securityQuestion, securityAnswer });
                     friendRequests.set(username, []);
                     friends.set(username, []);
-                    console.log(`Yeni kullanici kayit: ${username}`);
                     ws.send(JSON.stringify({ type: 'register_user_result', success: true }));
                 }
             }
@@ -33,9 +32,7 @@ wss.on('connection', (ws) => {
                 if (user && user.password === password) {
                     userId = username;
                     clients.set(userId, ws);
-                    console.log(`Giris yapti: ${userId}`);
                     ws.send(JSON.stringify({ type: 'login_user_result', success: true }));
-                    // Bekleyen istekleri gonder
                     const pending = friendRequests.get(username) || [];
                     if (pending.length > 0) {
                         ws.send(JSON.stringify({ type: 'pending_requests', requests: pending }));
@@ -48,13 +45,12 @@ wss.on('connection', (ws) => {
             else if (data.type === 'register') {
                 userId = data.userId;
                 clients.set(userId, ws);
-                console.log(`Kullanici baglandi: ${userId}`);
                 ws.send(JSON.stringify({ type: 'registered', userId }));
-                // Bekleyen istekleri gonder
+            }
+
+            else if (data.type === 'get_pending_requests') {
                 const pending = friendRequests.get(userId) || [];
-                if (pending.length > 0) {
-                    ws.send(JSON.stringify({ type: 'pending_requests', requests: pending }));
-                }
+                ws.send(JSON.stringify({ type: 'pending_requests', requests: pending }));
             }
 
             else if (data.type === 'search_users') {
@@ -70,7 +66,8 @@ wss.on('connection', (ws) => {
 
             else if (data.type === 'friend_request') {
                 const targetId = data.targetId;
-                const requests = friendRequests.get(targetId) || [];
+                if (!friendRequests.has(targetId)) friendRequests.set(targetId, []);
+                const requests = friendRequests.get(targetId);
                 if (!requests.includes(userId)) {
                     requests.push(userId);
                     friendRequests.set(targetId, requests);
@@ -84,20 +81,14 @@ wss.on('connection', (ws) => {
 
             else if (data.type === 'accept_friend') {
                 const fromId = data.fromId;
-                // Arkadas listesine ekle
-                const myFriends = friends.get(userId) || [];
+                if (!friends.has(userId)) friends.set(userId, []);
+                if (!friends.has(fromId)) friends.set(fromId, []);
+                const myFriends = friends.get(userId);
                 if (!myFriends.includes(fromId)) myFriends.push(fromId);
-                friends.set(userId, myFriends);
-
-                const theirFriends = friends.get(fromId) || [];
+                const theirFriends = friends.get(fromId);
                 if (!theirFriends.includes(userId)) theirFriends.push(userId);
-                friends.set(fromId, theirFriends);
-
-                // Istegi kaldir
                 const requests = friendRequests.get(userId) || [];
                 friendRequests.set(userId, requests.filter(r => r !== fromId));
-
-                // Karsi tarafa bildir
                 const fromWs = clients.get(fromId);
                 if (fromWs) {
                     fromWs.send(JSON.stringify({ type: 'friend_accepted', byId: userId }));
@@ -144,7 +135,6 @@ wss.on('connection', (ws) => {
     ws.on('close', () => {
         if (userId) {
             clients.delete(userId);
-            console.log(`Kullanici ayrildi: ${userId}`);
         }
     });
 });
