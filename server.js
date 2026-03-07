@@ -1,7 +1,7 @@
 const admin = require('firebase-admin');
 const express = require('express');
 const https = require('https');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
@@ -13,17 +13,10 @@ const db = admin.firestore();
 const app = express();
 app.use(express.json());
 
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 // OTP bellekte sakla (uid -> {otp, expiry})
 const otpStore = new Map();
-
-// Nodemailer transporter
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
 
 app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
@@ -40,12 +33,12 @@ app.post('/send-otp', async (req, res) => {
 
     const email = userDoc.data().email;
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiry = Date.now() + 10 * 60 * 1000; // 10 dakika
+    const expiry = Date.now() + 10 * 60 * 1000;
 
     otpStore.set(uid, { otp, expiry });
 
-    await transporter.sendMail({
-      from: `"Yogdzewa" <${process.env.EMAIL_USER}>`,
+    await resend.emails.send({
+      from: 'onboarding@resend.dev',
       to: email,
       subject: 'Şifre Sıfırlama Kodu',
       html: `
@@ -87,7 +80,7 @@ app.post('/verify-otp', (req, res) => {
   }
 });
 
-// Şifre sıfırla (Admin SDK ile)
+// Şifre sıfırla
 app.post('/reset-password', async (req, res) => {
   try {
     const { uid, newPassword } = req.body;
