@@ -39,7 +39,7 @@ function startListening() {
           const msg = change.doc.data();
           const toUid = msg.toUid;
           const fromUid = msg.fromUid;
-          const fromUsername = msg.from || 'Biri';
+          const fromUsername = (msg.from || 'Biri').toUpperCase();
 
           if (!toUid || toUid === fromUid) {
             await change.doc.ref.update({ notified: true });
@@ -67,7 +67,7 @@ function startListening() {
         if (change.type === 'added') {
           const req = change.doc.data();
           const toUsername = req.to;
-          const fromUsername = req.from || 'Biri';
+          const fromUsername = (req.from || 'Biri').toUpperCase();
           if (!toUsername) return;
           const userDocs = await db.collection('users').where('username', '==', toUsername).get();
           const fcmToken = userDocs.docs[0]?.data()?.fcmToken;
