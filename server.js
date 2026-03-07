@@ -1,155 +1,95 @@
-const WebSocket = require('ws');
-const { MongoClient } = require('mongodb');
+const admin = require('firebase-admin');
+const express = require('express');
 
-const mongoUrl = 'mongodb+srv://hbfix23:Horizan01.@cluster0.u4q0qas.mongodb.net/?appName=Cluster0';
-const dbName = 'yogdzewa';
+const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
-let db;
-let usersCol;
-let friendRequestsCol;
-let friendsCol;
-let messagesCol;
-
-MongoClient.connect(mongoUrl).then(client => {
-    db = client.db(dbName);
-    usersCol = db.collection('users');
-    friendRequestsCol = db.collection('friendRequests');
-    friendsCol = db.collection('friends');
-    messagesCol = db.collection('messages');
-    console.log('MongoDB baglandi!');
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
 });
 
-const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
-const clients = new Map();
+const db = admin.firestore();
+const app = express();
+app.use(express.json());
 
-wss.on('connection', (ws) => {
-    let userId = null;
+// Sağlık kontrolü - UptimeRobot için
+app.get('/', (req, res) => {
+  res.send('Yogdzewa bildirim sunucusu çalışıyor!');
+});
 
-    ws.on('message', async (message) => {
-        try {
-            const data = JSON.parse(message);
+async function sendNotification(toToken, fromUsername) {
+  try {
+    await admin.messaging().send({
+      token: toToken,
+      notification: {
+        title: fromUsername,
+        body: 'Yeni mesajınız var'
+      },
+      android: {
+        priority: 'high'
+      }
+    });
+    console.log('Bildirim gönderildi:', fromUsername);
+  } catch (error) {
+    console.error('Bildirim hatası:', error);
+  }
+}
 
-            if (data.type === 'register_user') {
-                const { username, password, securityQuestion, securityAnswer } = data;
-                const existing = await usersCol.findOne({ username });
-                if (existing) {
-                    ws.send(JSON.stringify({ type: 'register_user_result', success: false, message: 'Bu kullanici adi zaten kullaniliyor' }));
-                } else {
-                    await usersCol.insertOne({ username, password, securityQuestion, securityAnswer });
-                    ws.send(JSON.stringify({ type: 'register_user_result', success: true }));
-                }
-            }
+async function sendNotificationWithBody(toToken, title, body) {
+  try {
+    await admin.messaging().send({
+      token: toToken,
+      notification: { title, body },
+      android: { priority: 'high' }
+    });
+    console.log('Bildirim gönderildi:', title);
+  } catch (error) {
+    console.error('Bildirim hatası:', error);
+  }
+}
 
-            else if (data.type === 'login_user') {
-                const { username, password } = data;
-                const user = await usersCol.findOne({ username, password });
-                if (user) {
-                    userId = username;
-                    clients.set(userId, ws);
-                    ws.send(JSON.stringify({ type: 'login_user_result', success: true }));
-                    const pending = await friendRequestsCol.find({ targetId: username }).toArray();
-                    if (pending.length > 0) {
-                        ws.send(JSON.stringify({ type: 'pending_requests', requests: pending.map(r => r.fromId) }));
-                    }
-                } else {
-                    ws.send(JSON.stringify({ type: 'login_user_result', success: false, message: 'Kullanici adi veya sifre yanlis' }));
-                }
-            }
-
-            else if (data.type === 'register') {
-                userId = data.userId;
-                clients.set(userId, ws);
-                ws.send(JSON.stringify({ type: 'registered', userId }));
-                const pending = await friendRequestsCol.find({ targetId: userId }).toArray();
-                if (pending.length > 0) {
-                    ws.send(JSON.stringify({ type: 'pending_requests', requests: pending.map(r => r.fromId) }));
-                }
-            }
-
-            else if (data.type === 'get_pending_requests') {
-                const pending = await friendRequestsCol.find({ targetId: userId }).toArray();
-                ws.send(JSON.stringify({ type: 'pending_requests', requests: pending.map(r => r.fromId) }));
-            }
-
-            else if (data.type === 'search_users') {
-                const query = data.query.toLowerCase();
-                const results = await usersCol.find({ username: { $regex: query, $options: 'i' } }).toArray();
-                const filtered = results.map(u => u.username).filter(u => u !== userId);
-                ws.send(JSON.stringify({ type: 'search_results', results: filtered }));
-            }
-
-            else if (data.type === 'friend_request') {
-                const targetId = data.targetId;
-                const existing = await friendRequestsCol.findOne({ fromId: userId, targetId });
-                if (!existing) {
-                    await friendRequestsCol.insertOne({ fromId: userId, targetId });
-                }
-                const targetWs = clients.get(targetId);
-                if (targetWs) {
-                    targetWs.send(JSON.stringify({ type: 'friend_request', fromId: userId }));
-                }
-                ws.send(JSON.stringify({ type: 'friend_request_sent', success: true }));
-            }
-
-            else if (data.type === 'accept_friend') {
-                const fromId = data.fromId;
-                await friendsCol.updateOne({ userId }, { $addToSet: { friends: fromId } }, { upsert: true });
-                await friendsCol.updateOne({ userId: fromId }, { $addToSet: { friends: userId } }, { upsert: true });
-                await friendRequestsCol.deleteOne({ fromId, targetId: userId });
-                const fromWs = clients.get(fromId);
-                if (fromWs) {
-                    fromWs.send(JSON.stringify({ type: 'friend_accepted', byId: userId }));
-                }
-                ws.send(JSON.stringify({ type: 'friend_accepted', byId: fromId }));
-            }
-
-            else if (data.type === 'reject_friend') {
-                const fromId = data.fromId;
-                await friendRequestsCol.deleteOne({ fromId, targetId: userId });
-                ws.send(JSON.stringify({ type: 'friend_rejected', fromId }));
-            }
-
-            else if (data.type === 'get_friends') {
-                const doc = await friendsCol.findOne({ userId });
-                ws.send(JSON.stringify({ type: 'friends_list', friends: doc ? doc.friends : [] }));
-            }
-
-            else if (data.type === 'message') {
-                const { targetId, content } = data;
-                const timestamp = Date.now();
-                await messagesCol.insertOne({ fromId: userId, targetId, content, timestamp });
-                const targetWs = clients.get(targetId);
-                if (targetWs) {
-                    targetWs.send(JSON.stringify({ type: 'message', fromId: userId, content, timestamp }));
-                }
-            }
-
-            else if (data.type === 'get_messages') {
-                const { targetId } = data;
-                const msgs = await messagesCol.find({
-                    $or: [
-                        { fromId: userId, targetId },
-                        { fromId: targetId, targetId: userId }
-                    ]
-                }).sort({ timestamp: 1 }).toArray();
-                ws.send(JSON.stringify({ type: 'messages_history', messages: msgs }));
-            }
-
-            else if (data.type === 'offer' || data.type === 'answer' || data.type === 'ice-candidate') {
-                const targetWs = clients.get(data.targetId);
-                if (targetWs) {
-                    targetWs.send(JSON.stringify({ ...data, fromId: userId }));
-                }
-            }
-
-        } catch (e) {
-            console.error('Hata:', e);
+function startListening() {
+  // Mesaj bildirimleri
+  db.collectionGroup('messages')
+    .where('notified', '==', false)
+    .onSnapshot(snapshot => {
+      snapshot.docChanges().forEach(async change => {
+        if (change.type === 'added') {
+          const msg = change.doc.data();
+          const toUid = msg.toUid;
+          const fromUsername = msg.from || 'Biri';
+          if (!toUid) return;
+          const userDoc = await db.collection('users').doc(toUid).get();
+          const fcmToken = userDoc.data()?.fcmToken;
+          if (fcmToken) await sendNotification(fcmToken, fromUsername);
+          await change.doc.ref.update({ notified: true });
         }
+      });
     });
 
-    ws.on('close', () => {
-        if (userId) clients.delete(userId);
+  // Arkadaşlık isteği bildirimleri
+  db.collection('friendrequests')
+    .where('notified', '==', false)
+    .where('status', '==', 'pending')
+    .onSnapshot(snapshot => {
+      snapshot.docChanges().forEach(async change => {
+        if (change.type === 'added') {
+          const req = change.doc.data();
+          const toUsername = req.to;
+          const fromUsername = req.from || 'Biri';
+          if (!toUsername) return;
+          const userDocs = await db.collection('users').where('username', '==', toUsername).get();
+          const fcmToken = userDocs.docs[0]?.data()?.fcmToken;
+          if (fcmToken) await sendNotificationWithBody(fcmToken, 'Yeni Arkadaşlık İsteği', `${fromUsername} sana arkadaşlık isteği gönderdi`);
+          await change.doc.ref.update({ notified: true });
+        }
+      });
     });
+
+  console.log('Firestore dinleniyor...');
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Sunucu ${PORT} portunda çalışıyor`);
+  startListening();
 });
-
-console.log('Yogdzewa sinyal sunucusu baslatildi!');
