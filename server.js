@@ -11,30 +11,11 @@ const db = admin.firestore();
 const app = express();
 app.use(express.json());
 
-// Sağlık kontrolü - UptimeRobot için
 app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
-async function sendNotification(toToken, fromUsername) {
-  try {
-    await admin.messaging().send({
-      token: toToken,
-      notification: {
-        title: fromUsername,
-        body: 'Yeni mesajınız var'
-      },
-      android: {
-        priority: 'high'
-      }
-    });
-    console.log('Bildirim gönderildi:', fromUsername);
-  } catch (error) {
-    console.error('Bildirim hatası:', error);
-  }
-}
-
-async function sendNotificationWithBody(toToken, title, body) {
+async function sendNotification(toToken, title, body) {
   try {
     await admin.messaging().send({
       token: toToken,
@@ -56,11 +37,22 @@ function startListening() {
         if (change.type === 'added') {
           const msg = change.doc.data();
           const toUid = msg.toUid;
+          const fromUid = msg.fromUid;
           const fromUsername = msg.from || 'Biri';
-          if (!toUid) return;
+
+          // Kendi mesajına bildirim gitmesin
+          if (!toUid || toUid === fromUid) {
+            await change.doc.ref.update({ notified: true });
+            return;
+          }
+
           const userDoc = await db.collection('users').doc(toUid).get();
           const fcmToken = userDoc.data()?.fcmToken;
-          if (fcmToken) await sendNotification(fcmToken, fromUsername);
+
+          if (fcmToken) {
+            await sendNotification(fcmToken, fromUsername, 'Yeni mesajınız var');
+          }
+
           await change.doc.ref.update({ notified: true });
         }
       });
@@ -79,7 +71,9 @@ function startListening() {
           if (!toUsername) return;
           const userDocs = await db.collection('users').where('username', '==', toUsername).get();
           const fcmToken = userDocs.docs[0]?.data()?.fcmToken;
-          if (fcmToken) await sendNotificationWithBody(fcmToken, 'Yeni Arkadaşlık İsteği', `${fromUsername} sana arkadaşlık isteği gönderdi`);
+          if (fcmToken) {
+            await sendNotification(fcmToken, 'Yeni Arkadaşlık İsteği', `${fromUsername} sana arkadaşlık isteği gönderdi`);
+          }
           await change.doc.ref.update({ notified: true });
         }
       });
