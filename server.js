@@ -1,5 +1,6 @@
 const admin = require('firebase-admin');
 const express = require('express');
+const https = require('https');
 
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
@@ -40,7 +41,6 @@ function startListening() {
           const fromUid = msg.fromUid;
           const fromUsername = msg.from || 'Biri';
 
-          // Kendi mesajına bildirim gitmesin
           if (!toUid || toUid === fromUid) {
             await change.doc.ref.update({ notified: true });
             return;
@@ -86,4 +86,13 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Sunucu ${PORT} portunda çalışıyor`);
   startListening();
+
+  // Kendi kendini uyandır - her 4 dakikada bir ping at
+  setInterval(() => {
+    https.get('https://yogdzewa-server.onrender.com', (res) => {
+      console.log('Keep-alive ping:', res.statusCode);
+    }).on('error', (e) => {
+      console.log('Keep-alive hata:', e.message);
+    });
+  }, 4 * 60 * 1000);
 });
