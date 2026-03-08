@@ -16,6 +16,56 @@ app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
+// ✅ YENİ: Hesap silme endpoint
+app.post('/delete-user', async (req, res) => {
+  const { uid, username } = req.body;
+  if (!uid || !username) return res.status(400).json({ error: 'uid ve username gerekli' });
+
+  try {
+    // 1. Firebase Auth'dan sil
+    await admin.auth().deleteUser(uid);
+
+    // 2. users koleksiyonu
+    await db.collection('users').doc(uid).delete();
+
+    // 3. usernames koleksiyonu
+    await db.collection('usernames').doc(username.toLowerCase()).delete();
+
+    // 4. friends koleksiyonu
+    await db.collection('friends').doc(username.toLowerCase()).delete();
+
+    // 5. blocked koleksiyonu
+    await db.collection('blocked').doc(username.toLowerCase()).delete();
+
+    // 6. friendrequests - kullanıcıyla ilgili tüm istekler
+    const frFrom = await db.collection('friendrequests').where('from', '==', username.toLowerCase()).get();
+    const frTo = await db.collection('friendrequests').where('to', '==', username.toLowerCase()).get();
+    const frBatch = db.batch();
+    frFrom.docs.forEach(d => frBatch.delete(d.ref));
+    frTo.docs.forEach(d => frBatch.delete(d.ref));
+    await frBatch.commit();
+
+    // 7. chats - kullanıcının olduğu tüm sohbetler (uid içeren chatId'ler)
+    const chatsSnapshot = await db.collection('chats').get();
+    for (const chatDoc of chatsSnapshot.docs) {
+      if (chatDoc.id.includes(uid)) {
+        // Alt koleksiyon messages'ı sil
+        const messages = await chatDoc.ref.collection('messages').get();
+        const msgBatch = db.batch();
+        messages.docs.forEach(m => msgBatch.delete(m.ref));
+        await msgBatch.commit();
+        await chatDoc.ref.delete();
+      }
+    }
+
+    console.log(`Hesap silindi: ${uid} / ${username}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Hesap silme hatası:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 async function sendNotification(toToken, title, body) {
   try {
     await admin.messaging().send({
