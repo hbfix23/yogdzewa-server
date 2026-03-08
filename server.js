@@ -1,6 +1,7 @@
 const admin = require('firebase-admin');
 const express = require('express');
 const https = require('https');
+const crypto = require('crypto');
 
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
@@ -16,7 +17,7 @@ app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
-// ✅ Kozmik Oda kimlik doğrulama — şifre APK'da değil, Render'da
+// ✅ Kozmik Oda giriş doğrulama
 app.post('/kozmik-auth', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Eksik bilgi' });
@@ -34,6 +35,72 @@ app.post('/kozmik-auth', async (req, res) => {
   } else {
     console.log('Kozmik Oda yetkisiz giriş denemesi');
     res.status(401).json({ success: false, error: 'Yetkisiz erişim' });
+  }
+});
+
+// ✅ Balpeteği doğrulama — PBKDF2 SHA-512, 310000 iterasyon
+app.post('/balpetegi-auth', async (req, res) => {
+  const { sifre } = req.body;
+  if (!sifre) return res.status(400).json({ error: 'Şifre boş' });
+
+  const storedHash = process.env.BALPETEGI_HASH;
+  const storedSalt = process.env.BALPETEGI_SALT;
+
+  if (!storedHash || !storedSalt) {
+    return res.status(500).json({ error: 'Sunucu yapılandırma hatası' });
+  }
+
+  try {
+    const saltBytes = Buffer.from(storedSalt, 'base64');
+    const hashBytes = crypto.pbkdf2Sync(sifre, saltBytes, 310000, 64, 'sha512');
+    const hashBase64 = hashBytes.toString('base64');
+
+    if (hashBase64 === storedHash) {
+      console.log('Balpeteği doğrulandı');
+      res.json({ success: true });
+    } else {
+      console.log('Balpeteği yanlış');
+      res.status(401).json({ success: false, error: 'Yanlış balpeteği' });
+    }
+  } catch (e) {
+    console.error('Balpeteği doğrulama hatası:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ✅ Balpeteği değiştir — yeni hash döndürür, Render'a manuel eklersin
+app.post('/balpetegi-degistir', async (req, res) => {
+  const { eskiSifre, yeniSifre, kozmikToken } = req.body;
+  if (!eskiSifre || !yeniSifre || !kozmikToken) return res.status(400).json({ error: 'Eksik bilgi' });
+
+  if (kozmikToken !== process.env.KOZMIK_PASSWORD) {
+    return res.status(401).json({ error: 'Yetkisiz' });
+  }
+
+  const storedHash = process.env.BALPETEGI_HASH;
+  const storedSalt = process.env.BALPETEGI_SALT;
+
+  try {
+    const saltBytes = Buffer.from(storedSalt, 'base64');
+    const eskiHashBytes = crypto.pbkdf2Sync(eskiSifre, saltBytes, 310000, 64, 'sha512');
+    const eskiHashBase64 = eskiHashBytes.toString('base64');
+
+    if (eskiHashBase64 !== storedHash) {
+      return res.status(401).json({ success: false, error: 'Eski balpeteği yanlış' });
+    }
+
+    const yeniSaltBytes = crypto.randomBytes(16);
+    const yeniHashBytes = crypto.pbkdf2Sync(yeniSifre, yeniSaltBytes, 310000, 64, 'sha512');
+    const yeniSaltBase64 = yeniSaltBytes.toString('base64');
+    const yeniHashBase64 = yeniHashBytes.toString('base64');
+
+    res.json({
+      success: true,
+      yeniSalt: yeniSaltBase64,
+      yeniHash: yeniHashBase64
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
