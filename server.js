@@ -16,7 +16,6 @@ app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
-// ✅ YENİ: Hesap silme endpoint
 app.post('/delete-user', async (req, res) => {
   const { uid, username } = req.body;
   if (!uid || !username) return res.status(400).json({ error: 'uid ve username gerekli' });
@@ -31,10 +30,10 @@ app.post('/delete-user', async (req, res) => {
     // 3. usernames koleksiyonu
     await db.collection('usernames').doc(username.toLowerCase()).delete();
 
-    // 4. friends koleksiyonu
+    // 4. friends koleksiyonu (kendi dokümanı)
     await db.collection('friends').doc(username.toLowerCase()).delete();
 
-    // 5. blocked koleksiyonu
+    // 5. blocked koleksiyonu (kendi dokümanı)
     await db.collection('blocked').doc(username.toLowerCase()).delete();
 
     // 6. friendrequests - kullanıcıyla ilgili tüm istekler
@@ -45,11 +44,10 @@ app.post('/delete-user', async (req, res) => {
     frTo.docs.forEach(d => frBatch.delete(d.ref));
     await frBatch.commit();
 
-    // 7. chats - kullanıcının olduğu tüm sohbetler (uid içeren chatId'ler)
+    // 7. chats - uid içeren tüm sohbetler + mesajları
     const chatsSnapshot = await db.collection('chats').get();
     for (const chatDoc of chatsSnapshot.docs) {
       if (chatDoc.id.includes(uid)) {
-        // Alt koleksiyon messages'ı sil
         const messages = await chatDoc.ref.collection('messages').get();
         const msgBatch = db.batch();
         messages.docs.forEach(m => msgBatch.delete(m.ref));
@@ -57,6 +55,35 @@ app.post('/delete-user', async (req, res) => {
         await chatDoc.ref.delete();
       }
     }
+
+    // ✅ 8. Diğer kullanıcıların friends listesinden sil
+    const allFriends = await db.collection('friends').get();
+    const friendsBatch = db.batch();
+    allFriends.docs.forEach(doc => {
+      const friends = doc.data().friends || [];
+      if (friends.includes(username.toLowerCase())) {
+        friendsBatch.update(doc.ref, {
+          friends: friends.filter(f => f !== username.toLowerCase())
+        });
+      }
+    });
+    await friendsBatch.commit();
+
+    // ✅ 9. Diğer kullanıcıların blocked listesinden sil
+    const allBlocked = await db.collection('blocked').get();
+    const blockedBatch = db.batch();
+    allBlocked.docs.forEach(doc => {
+      const blocked = doc.data().blocked || [];
+      if (blocked.includes(username.toLowerCase())) {
+        blockedBatch.update(doc.ref, {
+          blocked: blocked.filter(b => b !== username.toLowerCase())
+        });
+      }
+    });
+    await blockedBatch.commit();
+
+    // ✅ 10. pending_users temizle
+    await db.collection('pending_users').doc(uid).delete();
 
     console.log(`Hesap silindi: ${uid} / ${username}`);
     res.json({ success: true });
