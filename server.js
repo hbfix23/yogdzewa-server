@@ -1,4 +1,4 @@
-   const admin = require('firebase-admin');
+const admin = require('firebase-admin');
 const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
@@ -51,7 +51,55 @@ app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
-// ✅ Medya yükle — startOffset ile video kırpma desteği
+// ✅ Groq AI endpoint
+app.post('/ai-chat', async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  if (rateLimit(ip, 'ai-chat', 30, 60 * 1000)) {
+    return res.status(429).json({ error: 'Çok fazla istek. Biraz bekle.' });
+  }
+
+  const { messages } = req.body;
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ error: 'Geçersiz mesaj formatı' });
+  }
+
+  const GROQ_API_KEY = process.env.GROQ_API_KEY;
+  if (!GROQ_API_KEY) return res.status(500).json({ error: 'AI yapılandırma hatası' });
+
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'Sen Yogdzewa uygulamasının yapay zeka asistanısın. Türkçe konuş. Kısa ve net cevaplar ver.'
+          },
+          ...messages
+        ],
+        max_tokens: 1024,
+        temperature: 0.7
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return res.status(500).json({ error: data.error?.message || 'AI hatası' });
+    }
+
+    res.json({ reply: data.choices[0].message.content });
+  } catch (e) {
+    console.error('AI hata:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ✅ Medya yükle
 app.post('/upload-media', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   if (rateLimit(ip, 'upload-media', 10, 60 * 1000)) {
@@ -75,11 +123,7 @@ app.post('/upload-media', async (req, res) => {
       format: mediaType === 'image' ? 'jpg' : 'mp4'
     });
 
-    res.json({
-      success: true,
-      url: result.secure_url,
-      publicId: result.public_id
-    });
+    res.json({ success: true, url: result.secure_url, publicId: result.public_id });
   } catch (e) {
     console.error('Cloudinary yükleme hatası:', e);
     res.status(500).json({ error: e.message });
@@ -90,7 +134,6 @@ app.post('/upload-media', async (req, res) => {
 app.post('/delete-media', async (req, res) => {
   const { uid, publicId } = req.body;
   if (!uid || !publicId) return res.status(400).json({ error: 'Eksik bilgi' });
-
   try {
     const resourceType = publicId.includes('/video/') ? 'video' : 'image';
     await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
@@ -125,10 +168,8 @@ app.post('/kozmik-auth', async (req, res) => {
   }
 
   if (username === KOZMIK_USERNAME && passwordOk) {
-    console.log('Kozmik Oda girişi başarılı');
     res.json({ success: true });
   } else {
-    console.log('Kozmik Oda yetkisiz giriş denemesi');
     res.status(401).json({ success: false, error: 'Yetkisiz erişim' });
   }
 });
@@ -144,19 +185,14 @@ app.post('/balpetegi-auth', async (req, res) => {
 
   const storedHash = process.env.BALPETEGI_HASH;
   const storedSalt = process.env.BALPETEGI_SALT;
-
   if (!storedHash || !storedSalt) return res.status(500).json({ error: 'Sunucu yapılandırma hatası' });
 
   try {
     const saltBytes = Buffer.from(storedSalt, 'base64');
     const hashBytes = crypto.pbkdf2Sync(sifre, saltBytes, 310000, 64, 'sha512');
-    const hashBase64 = hashBytes.toString('base64');
-
-    if (hashBase64 === storedHash) {
-      console.log('Balpeteği doğrulandı');
+    if (hashBytes.toString('base64') === storedHash) {
       res.json({ success: true });
     } else {
-      console.log('Balpeteği yanlış');
       res.status(401).json({ success: false, error: 'Yanlış balpeteği' });
     }
   } catch (e) {
@@ -194,10 +230,8 @@ app.post('/balpetegi-degistir', async (req, res) => {
     if (eskiHashBytes.toString('base64') !== storedHash) {
       return res.status(401).json({ success: false, error: 'Eski balpeteği yanlış' });
     }
-
     const yeniSaltBytes = crypto.randomBytes(16);
     const yeniHashBytes = crypto.pbkdf2Sync(yeniSifre, yeniSaltBytes, 310000, 64, 'sha512');
-
     res.json({
       success: true,
       yeniSalt: yeniSaltBytes.toString('base64'),
@@ -304,16 +338,11 @@ app.post('/delete-user', async (req, res) => {
     });
     await blockedBatch.commit();
 
-    try {
-      await cloudinary.api.delete_resources_by_prefix(`yogdzewa/statuses/${uid}`);
-    } catch (_) {}
-
+    try { await cloudinary.api.delete_resources_by_prefix(`yogdzewa/statuses/${uid}`); } catch (_) {}
     await db.collection('pending_users').doc(uid).delete();
 
-    console.log(`Hesap silindi: ${uid} / ${username}`);
     res.json({ success: true });
   } catch (error) {
-    console.error('Hesap silme hatası:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -325,7 +354,6 @@ async function sendNotification(toToken, title, body) {
       notification: { title, body },
       android: { priority: 'high' }
     });
-    console.log('Bildirim gönderildi:', title);
   } catch (error) {
     console.error('Bildirim hatası:', error);
   }
