@@ -13,7 +13,6 @@ const db = admin.firestore();
 const app = express();
 app.use(express.json());
 
-// ✅ Rate limiting — express-rate-limit yerine basit in-memory
 const rateLimitMap = new Map();
 function rateLimit(ip, endpoint, maxAttempts, windowMs) {
   const key = `${ip}_${endpoint}`;
@@ -28,11 +27,22 @@ function rateLimit(ip, endpoint, maxAttempts, windowMs) {
   return record.count > maxAttempts;
 }
 
+// ✅ Balpeteği hash ile token doğrula
+async function tokenDogrula(kozmikToken) {
+  const storedHash = process.env.BALPETEGI_HASH;
+  const storedSalt = process.env.BALPETEGI_SALT;
+  if (!storedHash || !storedSalt || !kozmikToken) return false;
+  try {
+    const saltBytes = Buffer.from(storedSalt, 'base64');
+    const hashBytes = crypto.pbkdf2Sync(kozmikToken, saltBytes, 310000, 64, 'sha512');
+    return hashBytes.toString('base64') === storedHash;
+  } catch { return false; }
+}
+
 app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
-// ✅ Kozmik Oda giriş — KOZMIK_PASSWORD hash ile karşılaştır
 app.post('/kozmik-auth', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   if (rateLimit(ip, 'kozmik-auth', 5, 60 * 1000)) {
@@ -48,14 +58,12 @@ app.post('/kozmik-auth', async (req, res) => {
 
   if (!KOZMIK_USERNAME) return res.status(500).json({ error: 'Sunucu yapılandırma hatası' });
 
-  // ✅ Eğer hash sistemi kurulduysa hash ile karşılaştır, kurulmadıysa düz karşılaştır
   let passwordOk = false;
   if (KOZMIK_PASSWORD_HASH && KOZMIK_PASSWORD_SALT) {
     const saltBytes = Buffer.from(KOZMIK_PASSWORD_SALT, 'base64');
     const hashBytes = crypto.pbkdf2Sync(password, saltBytes, 310000, 64, 'sha512');
     passwordOk = hashBytes.toString('base64') === KOZMIK_PASSWORD_HASH;
   } else {
-    // Geçiş dönemi — düz şifre
     passwordOk = password === process.env.KOZMIK_PASSWORD;
   }
 
@@ -68,7 +76,6 @@ app.post('/kozmik-auth', async (req, res) => {
   }
 });
 
-// ✅ Balpeteği doğrulama
 app.post('/balpetegi-auth', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   if (rateLimit(ip, 'balpetegi-auth', 5, 60 * 1000)) {
@@ -100,7 +107,6 @@ app.post('/balpetegi-auth', async (req, res) => {
   }
 });
 
-// ✅ Balpeteği değiştir
 app.post('/balpetegi-degistir', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   if (rateLimit(ip, 'balpetegi-degistir', 3, 60 * 1000)) {
@@ -110,7 +116,6 @@ app.post('/balpetegi-degistir', async (req, res) => {
   const { eskiSifre, yeniSifre, kozmikToken } = req.body;
   if (!eskiSifre || !yeniSifre || !kozmikToken) return res.status(400).json({ error: 'Eksik bilgi' });
 
-  // Kozmik token kontrolü
   const KOZMIK_PASSWORD_HASH = process.env.KOZMIK_PASSWORD_HASH;
   const KOZMIK_PASSWORD_SALT = process.env.KOZMIK_PASSWORD_SALT;
   let tokenOk = false;
@@ -147,10 +152,10 @@ app.post('/balpetegi-degistir', async (req, res) => {
   }
 });
 
-// ✅ Ban/Unban — sadece Render üzerinden, Firestore Rules bypass
+// ✅ Ban/Unban — balpeteği ile doğrula
 app.post('/ban-user', async (req, res) => {
   const { uid, banned, kozmikToken } = req.body;
-  if (!uid || kozmikToken !== process.env.KOZMIK_PASSWORD) return res.status(401).json({ error: 'Yetkisiz' });
+  if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
   try {
     await db.collection('users').doc(uid).update({ banned: !!banned });
     res.json({ success: true });
@@ -159,10 +164,10 @@ app.post('/ban-user', async (req, res) => {
   }
 });
 
-// ✅ Shadow ban — sadece Render üzerinden
+// ✅ Shadow ban — balpeteği ile doğrula
 app.post('/shadow-ban', async (req, res) => {
   const { uid, shadowBanned, kozmikToken } = req.body;
-  if (!uid || kozmikToken !== process.env.KOZMIK_PASSWORD) return res.status(401).json({ error: 'Yetkisiz' });
+  if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
   try {
     await db.collection('users').doc(uid).update({ shadowBanned: !!shadowBanned });
     res.json({ success: true });
@@ -171,10 +176,10 @@ app.post('/shadow-ban', async (req, res) => {
   }
 });
 
-// ✅ Geçici ban — sadece Render üzerinden
+// ✅ Geçici ban — balpeteği ile doğrula
 app.post('/temp-ban', async (req, res) => {
   const { uid, banExpiry, kozmikToken } = req.body;
-  if (!uid || kozmikToken !== process.env.KOZMIK_PASSWORD) return res.status(401).json({ error: 'Yetkisiz' });
+  if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
   try {
     await db.collection('users').doc(uid).update({ banExpiry: banExpiry || 0, banned: false });
     res.json({ success: true });
@@ -183,10 +188,10 @@ app.post('/temp-ban', async (req, res) => {
   }
 });
 
-// ✅ Rozet ver — sadece Render üzerinden
+// ✅ Rozet ver — balpeteği ile doğrula
 app.post('/set-badge', async (req, res) => {
   const { uid, badge, kozmikToken } = req.body;
-  if (!uid || kozmikToken !== process.env.KOZMIK_PASSWORD) return res.status(401).json({ error: 'Yetkisiz' });
+  if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
   const validBadges = ['normal', 'vip', 'admin', 'founder'];
   if (!validBadges.includes(badge)) return res.status(400).json({ error: 'Geçersiz rozet' });
   try {
@@ -197,7 +202,6 @@ app.post('/set-badge', async (req, res) => {
   }
 });
 
-// ✅ Hesap sil
 app.post('/delete-user', async (req, res) => {
   const { uid, username } = req.body;
   if (!uid || !username) return res.status(400).json({ error: 'uid ve username gerekli' });
