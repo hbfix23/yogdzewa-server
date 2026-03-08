@@ -99,6 +99,42 @@ app.post('/ai-chat', async (req, res) => {
   }
 });
 
+// ✅ Sesli arama bildirimi
+app.post('/call-notify', async (req, res) => {
+  const { calleeUid, callerUsername, callId } = req.body;
+  if (!calleeUid || !callerUsername || !callId) {
+    return res.status(400).json({ error: 'Eksik bilgi' });
+  }
+
+  try {
+    const userDoc = await db.collection('users').doc(calleeUid).get();
+    const fcmToken = userDoc.data()?.fcmToken;
+    if (!fcmToken) return res.status(404).json({ error: 'FCM token bulunamadı' });
+
+    await admin.messaging().send({
+      token: fcmToken,
+      data: {
+        type: 'incoming_call',
+        callerUsername: callerUsername,
+        callId: callId
+      },
+      android: {
+        priority: 'high',
+        ttl: 30000
+      },
+      notification: {
+        title: '📞 Gelen Arama',
+        body: `${callerUsername.toUpperCase()} sizi arıyor`
+      }
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Arama bildirimi hatası:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ✅ Medya yükle
 app.post('/upload-media', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -395,6 +431,44 @@ function startListening() {
           const fcmToken = userDocs.docs[0]?.data()?.fcmToken;
           if (fcmToken) await sendNotification(fcmToken, 'Yeni Arkadaşlık İsteği', `${fromUsername} sana arkadaşlık isteği gönderdi`);
           await change.doc.ref.update({ notified: true });
+        }
+      });
+    });
+
+  // ✅ Yeni aramalar dinle — karşı tarafa FCM gönder
+  db.collection('calls')
+    .where('status', '==', 'calling')
+    .onSnapshot(snapshot => {
+      snapshot.docChanges().forEach(async change => {
+        if (change.type === 'added') {
+          const call = change.doc.data();
+          const { calleeUid, callerUsername, callId } = call;
+          if (!calleeUid || !callerUsername || !callId) return;
+
+          const userDoc = await db.collection('users').doc(calleeUid).get();
+          const fcmToken = userDoc.data()?.fcmToken;
+          if (!fcmToken) return;
+
+          try {
+            await admin.messaging().send({
+              token: fcmToken,
+              data: {
+                type: 'incoming_call',
+                callerUsername: callerUsername,
+                callId: callId
+              },
+              android: {
+                priority: 'high',
+                ttl: 30000
+              },
+              notification: {
+                title: '📞 Gelen Arama',
+                body: `${callerUsername.toUpperCase()} sizi arıyor`
+              }
+            });
+          } catch (e) {
+            console.error('Arama bildirimi hatası:', e);
+          }
         }
       });
     });
