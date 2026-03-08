@@ -2,6 +2,9 @@ const admin = require('firebase-admin');
 const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
+const cloudinary = require('cloudinary').v2;
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_JSON);
 
@@ -9,9 +12,16 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
+// ✅ Cloudinary yapılandırma
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
 const db = admin.firestore();
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 const rateLimitMap = new Map();
 function rateLimit(ip, endpoint, maxAttempts, windowMs) {
@@ -27,7 +37,6 @@ function rateLimit(ip, endpoint, maxAttempts, windowMs) {
   return record.count > maxAttempts;
 }
 
-// ✅ Balpeteği hash ile token doğrula
 async function tokenDogrula(kozmikToken) {
   const storedHash = process.env.BALPETEGI_HASH;
   const storedSalt = process.env.BALPETEGI_SALT;
@@ -41,6 +50,50 @@ async function tokenDogrula(kozmikToken) {
 
 app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
+});
+
+// ✅ Medya yükle — fotoğraf veya video (base64)
+app.post('/upload-media', async (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  if (rateLimit(ip, 'upload-media', 10, 60 * 1000)) {
+    return res.status(429).json({ error: 'Çok fazla istek.' });
+  }
+
+  const { uid, base64Data, mediaType } = req.body;
+  if (!uid || !base64Data || !mediaType) return res.status(400).json({ error: 'Eksik bilgi' });
+  if (!['image', 'video'].includes(mediaType)) return res.status(400).json({ error: 'Geçersiz medya tipi' });
+
+  try {
+    const result = await cloudinary.uploader.upload(base64Data, {
+      resource_type: mediaType,
+      folder: `yogdzewa/statuses/${uid}`,
+      transformation: mediaType === 'video' ? [{ duration: '15' }] : [],
+      format: mediaType === 'image' ? 'jpg' : 'mp4'
+    });
+
+    res.json({
+      success: true,
+      url: result.secure_url,
+      publicId: result.public_id
+    });
+  } catch (e) {
+    console.error('Cloudinary yükleme hatası:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ✅ Medya sil — durum silinince Cloudinary'den de sil
+app.post('/delete-media', async (req, res) => {
+  const { uid, publicId } = req.body;
+  if (!uid || !publicId) return res.status(400).json({ error: 'Eksik bilgi' });
+
+  try {
+    const resourceType = publicId.includes('/video/') ? 'video' : 'image';
+    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/kozmik-auth', async (req, res) => {
@@ -60,7 +113,7 @@ app.post('/kozmik-auth', async (req, res) => {
 
   let passwordOk = false;
   if (KOZMIK_PASSWORD_HASH && KOZMIK_PASSWORD_SALT) {
-    const saltBytes = Buffer.from(KOZMIK_PASSWORD_SALT, 'base64');
+    const saltBytes = Buffer.from(KOZMIK_PASSWORD_HASH, 'base64');
     const hashBytes = crypto.pbkdf2Sync(password, saltBytes, 310000, 64, 'sha512');
     passwordOk = hashBytes.toString('base64') === KOZMIK_PASSWORD_HASH;
   } else {
@@ -152,7 +205,6 @@ app.post('/balpetegi-degistir', async (req, res) => {
   }
 });
 
-// ✅ Ban/Unban — balpeteği ile doğrula
 app.post('/ban-user', async (req, res) => {
   const { uid, banned, kozmikToken } = req.body;
   if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
@@ -164,7 +216,6 @@ app.post('/ban-user', async (req, res) => {
   }
 });
 
-// ✅ Shadow ban — balpeteği ile doğrula
 app.post('/shadow-ban', async (req, res) => {
   const { uid, shadowBanned, kozmikToken } = req.body;
   if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
@@ -176,7 +227,6 @@ app.post('/shadow-ban', async (req, res) => {
   }
 });
 
-// ✅ Geçici ban — balpeteği ile doğrula
 app.post('/temp-ban', async (req, res) => {
   const { uid, banExpiry, kozmikToken } = req.body;
   if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
@@ -188,7 +238,6 @@ app.post('/temp-ban', async (req, res) => {
   }
 });
 
-// ✅ Rozet ver — balpeteği ile doğrula
 app.post('/set-badge', async (req, res) => {
   const { uid, badge, kozmikToken } = req.body;
   if (!uid || !(await tokenDogrula(kozmikToken))) return res.status(401).json({ error: 'Yetkisiz' });
@@ -250,6 +299,11 @@ app.post('/delete-user', async (req, res) => {
       }
     });
     await blockedBatch.commit();
+
+    // ✅ Cloudinary'den kullanıcının tüm medyasını sil
+    try {
+      await cloudinary.api.delete_resources_by_prefix(`yogdzewa/statuses/${uid}`);
+    } catch (_) {}
 
     await db.collection('pending_users').doc(uid).delete();
 
