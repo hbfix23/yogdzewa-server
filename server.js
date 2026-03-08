@@ -1,4 +1,4 @@
-const admin = require('firebase-admin');
+   const admin = require('firebase-admin');
 const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
@@ -12,7 +12,6 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 
-// ✅ Cloudinary yapılandırma
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -21,7 +20,7 @@ cloudinary.config({
 
 const db = admin.firestore();
 const app = express();
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
 
 const rateLimitMap = new Map();
 function rateLimit(ip, endpoint, maxAttempts, windowMs) {
@@ -52,22 +51,27 @@ app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
-// ✅ Medya yükle — fotoğraf veya video (base64)
+// ✅ Medya yükle — startOffset ile video kırpma desteği
 app.post('/upload-media', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   if (rateLimit(ip, 'upload-media', 10, 60 * 1000)) {
     return res.status(429).json({ error: 'Çok fazla istek.' });
   }
 
-  const { uid, base64Data, mediaType } = req.body;
+  const { uid, base64Data, mediaType, startOffset } = req.body;
   if (!uid || !base64Data || !mediaType) return res.status(400).json({ error: 'Eksik bilgi' });
   if (!['image', 'video'].includes(mediaType)) return res.status(400).json({ error: 'Geçersiz medya tipi' });
 
   try {
+    const offset = parseInt(startOffset) || 0;
+    const transformation = mediaType === 'video'
+      ? [{ start_offset: offset, end_offset: offset + 15 }]
+      : [];
+
     const result = await cloudinary.uploader.upload(base64Data, {
       resource_type: mediaType,
       folder: `yogdzewa/statuses/${uid}`,
-      transformation: mediaType === 'video' ? [{ duration: '15' }] : [],
+      transformation,
       format: mediaType === 'image' ? 'jpg' : 'mp4'
     });
 
@@ -82,7 +86,7 @@ app.post('/upload-media', async (req, res) => {
   }
 });
 
-// ✅ Medya sil — durum silinince Cloudinary'den de sil
+// ✅ Medya sil
 app.post('/delete-media', async (req, res) => {
   const { uid, publicId } = req.body;
   if (!uid || !publicId) return res.status(400).json({ error: 'Eksik bilgi' });
@@ -113,7 +117,7 @@ app.post('/kozmik-auth', async (req, res) => {
 
   let passwordOk = false;
   if (KOZMIK_PASSWORD_HASH && KOZMIK_PASSWORD_SALT) {
-    const saltBytes = Buffer.from(KOZMIK_PASSWORD_HASH, 'base64');
+    const saltBytes = Buffer.from(KOZMIK_PASSWORD_SALT, 'base64');
     const hashBytes = crypto.pbkdf2Sync(password, saltBytes, 310000, 64, 'sha512');
     passwordOk = hashBytes.toString('base64') === KOZMIK_PASSWORD_HASH;
   } else {
@@ -300,7 +304,6 @@ app.post('/delete-user', async (req, res) => {
     });
     await blockedBatch.commit();
 
-    // ✅ Cloudinary'den kullanıcının tüm medyasını sil
     try {
       await cloudinary.api.delete_resources_by_prefix(`yogdzewa/statuses/${uid}`);
     } catch (_) {}
