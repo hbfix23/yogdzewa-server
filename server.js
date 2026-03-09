@@ -106,7 +106,7 @@ app.post('/call-notify', async (req, res) => {
       },
       android: {
         priority: 'high',
-        ttl: '30000'
+        ttl: 30000
       }
     });
     res.json({ success: true });
@@ -402,7 +402,7 @@ function startListening() {
               },
               android: {
                 priority: 'high',
-                ttl: '30000'
+                ttl: 30000
               }
             });
           } catch (e) {
