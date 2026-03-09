@@ -419,11 +419,22 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Sunucu ${PORT} portunda çalışıyor`);
   startListening();
+
+  // Ana sunucu ping
   setInterval(() => {
     https.get('https://yogdzewa-server.onrender.com', (res) => {
       console.log('Keep-alive ping:', res.statusCode);
     }).on('error', (e) => {
       console.log('Keep-alive hata:', e.message);
+    });
+  }, 4 * 60 * 1000);
+
+  // Coturn ping
+  setInterval(() => {
+    https.get('https://yogdzewa-coturn.onrender.com', (res) => {
+      console.log('Coturn ping:', res.statusCode);
+    }).on('error', (e) => {
+      console.log('Coturn ping hata:', e.message);
     });
   }, 4 * 60 * 1000);
 });
