@@ -1,6 +1,7 @@
 const admin = require('firebase-admin');
 const express = require('express');
 const https = require('https');
+const net = require('net');
 const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
@@ -355,6 +356,12 @@ function startListening() {
             await change.doc.ref.update({ notified: true });
             return;
           }
+          // Sadece text mesajları için bildirim gönder
+          const msgType = msg.type || 'text';
+          if (msgType !== 'text') {
+            await change.doc.ref.update({ notified: true });
+            return;
+          }
           const userDoc = await db.collection('users').doc(toUid).get();
           const fcmToken = userDoc.data()?.fcmToken;
           if (fcmToken) await sendNotification(fcmToken, fromUsername, 'Yeni mesajınız var');
@@ -420,7 +427,7 @@ app.listen(PORT, () => {
   console.log(`Sunucu ${PORT} portunda çalışıyor`);
   startListening();
 
-  // Ana sunucu ping
+  // Ana sunucu HTTP ping - her 4 dakikada
   setInterval(() => {
     https.get('https://yogdzewa-server.onrender.com', (res) => {
       console.log('Keep-alive ping:', res.statusCode);
@@ -429,12 +436,27 @@ app.listen(PORT, () => {
     });
   }, 4 * 60 * 1000);
 
-  // Coturn ping
+  // Coturn HTTP ping - her 4 dakikada
   setInterval(() => {
     https.get('https://yogdzewa-coturn.onrender.com', (res) => {
-      console.log('Coturn ping:', res.statusCode);
+      console.log('Coturn HTTP ping:', res.statusCode);
     }).on('error', (e) => {
-      console.log('Coturn ping hata:', e.message);
+      console.log('Coturn HTTP ping hata:', e.message);
     });
   }, 4 * 60 * 1000);
+
+  // Coturn TCP ping - her 3 dakikada (TURN protokolü için kritik)
+  setInterval(() => {
+    const socket = net.createConnection({ host: 'yogdzewa-coturn.onrender.com', port: 3478 }, () => {
+      console.log('Coturn TCP ping: OK');
+      socket.destroy();
+    });
+    socket.on('error', (e) => {
+      console.log('Coturn TCP ping hata:', e.message);
+    });
+    socket.setTimeout(5000, () => {
+      console.log('Coturn TCP ping timeout');
+      socket.destroy();
+    });
+  }, 3 * 60 * 1000);
 });
