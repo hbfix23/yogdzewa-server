@@ -51,21 +51,17 @@ app.get('/', (req, res) => {
   res.send('Yogdzewa bildirim sunucusu çalışıyor!');
 });
 
-// ✅ Groq AI endpoint
 app.post('/ai-chat', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   if (rateLimit(ip, 'ai-chat', 30, 60 * 1000)) {
     return res.status(429).json({ error: 'Çok fazla istek. Biraz bekle.' });
   }
-
   const { messages } = req.body;
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Geçersiz mesaj formatı' });
   }
-
   const GROQ_API_KEY = process.env.GROQ_API_KEY;
   if (!GROQ_API_KEY) return res.status(500).json({ error: 'AI yapılandırma hatası' });
-
   try {
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -76,22 +72,15 @@ app.post('/ai-chat', async (req, res) => {
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
         messages: [
-          {
-            role: 'system',
-            content: 'Sen Yogdzewa uygulamasının yapay zeka asistanısın. Türkçe konuş. Kısa ve net cevaplar ver.'
-          },
+          { role: 'system', content: 'Sen Yogdzewa uygulamasının yapay zeka asistanısın. Türkçe konuş. Kısa ve net cevaplar ver.' },
           ...messages
         ],
         max_tokens: 1024,
         temperature: 0.7
       })
     });
-
     const data = await response.json();
-    if (!response.ok) {
-      return res.status(500).json({ error: data.error?.message || 'AI hatası' });
-    }
-
+    if (!response.ok) return res.status(500).json({ error: data.error?.message || 'AI hatası' });
     res.json({ reply: data.choices[0].message.content });
   } catch (e) {
     console.error('AI hata:', e);
@@ -99,18 +88,15 @@ app.post('/ai-chat', async (req, res) => {
   }
 });
 
-// ✅ Sesli arama bildirimi
 app.post('/call-notify', async (req, res) => {
   const { calleeUid, callerUsername, callId } = req.body;
   if (!calleeUid || !callerUsername || !callId) {
     return res.status(400).json({ error: 'Eksik bilgi' });
   }
-
   try {
     const userDoc = await db.collection('users').doc(calleeUid).get();
     const fcmToken = userDoc.data()?.fcmToken;
     if (!fcmToken) return res.status(404).json({ error: 'FCM token bulunamadı' });
-
     await admin.messaging().send({
       token: fcmToken,
       data: {
@@ -120,14 +106,9 @@ app.post('/call-notify', async (req, res) => {
       },
       android: {
         priority: 'high',
-        ttl: 30000
-      },
-      notification: {
-        title: '📞 Gelen Arama',
-        body: `${callerUsername.toUpperCase()} sizi arıyor`
+        ttl: '30000'
       }
     });
-
     res.json({ success: true });
   } catch (e) {
     console.error('Arama bildirimi hatası:', e);
@@ -135,30 +116,23 @@ app.post('/call-notify', async (req, res) => {
   }
 });
 
-// ✅ Medya yükle
 app.post('/upload-media', async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   if (rateLimit(ip, 'upload-media', 10, 60 * 1000)) {
     return res.status(429).json({ error: 'Çok fazla istek.' });
   }
-
   const { uid, base64Data, mediaType, startOffset } = req.body;
   if (!uid || !base64Data || !mediaType) return res.status(400).json({ error: 'Eksik bilgi' });
   if (!['image', 'video'].includes(mediaType)) return res.status(400).json({ error: 'Geçersiz medya tipi' });
-
   try {
     const offset = parseInt(startOffset) || 0;
-    const transformation = mediaType === 'video'
-      ? [{ start_offset: offset, end_offset: offset + 15 }]
-      : [];
-
+    const transformation = mediaType === 'video' ? [{ start_offset: offset, end_offset: offset + 15 }] : [];
     const result = await cloudinary.uploader.upload(base64Data, {
       resource_type: mediaType,
       folder: `yogdzewa/statuses/${uid}`,
       transformation,
       format: mediaType === 'image' ? 'jpg' : 'mp4'
     });
-
     res.json({ success: true, url: result.secure_url, publicId: result.public_id });
   } catch (e) {
     console.error('Cloudinary yükleme hatası:', e);
@@ -166,7 +140,6 @@ app.post('/upload-media', async (req, res) => {
   }
 });
 
-// ✅ Medya sil
 app.post('/delete-media', async (req, res) => {
   const { uid, publicId } = req.body;
   if (!uid || !publicId) return res.status(400).json({ error: 'Eksik bilgi' });
@@ -184,16 +157,12 @@ app.post('/kozmik-auth', async (req, res) => {
   if (rateLimit(ip, 'kozmik-auth', 5, 60 * 1000)) {
     return res.status(429).json({ error: 'Çok fazla deneme. 1 dakika bekle.' });
   }
-
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Eksik bilgi' });
-
   const KOZMIK_USERNAME = process.env.KOZMIK_USERNAME;
   const KOZMIK_PASSWORD_HASH = process.env.KOZMIK_PASSWORD_HASH;
   const KOZMIK_PASSWORD_SALT = process.env.KOZMIK_PASSWORD_SALT;
-
   if (!KOZMIK_USERNAME) return res.status(500).json({ error: 'Sunucu yapılandırma hatası' });
-
   let passwordOk = false;
   if (KOZMIK_PASSWORD_HASH && KOZMIK_PASSWORD_SALT) {
     const saltBytes = Buffer.from(KOZMIK_PASSWORD_SALT, 'base64');
@@ -202,7 +171,6 @@ app.post('/kozmik-auth', async (req, res) => {
   } else {
     passwordOk = password === process.env.KOZMIK_PASSWORD;
   }
-
   if (username === KOZMIK_USERNAME && passwordOk) {
     res.json({ success: true });
   } else {
@@ -215,14 +183,11 @@ app.post('/balpetegi-auth', async (req, res) => {
   if (rateLimit(ip, 'balpetegi-auth', 5, 60 * 1000)) {
     return res.status(429).json({ error: 'Çok fazla deneme. 1 dakika bekle.' });
   }
-
   const { sifre } = req.body;
   if (!sifre) return res.status(400).json({ error: 'Şifre boş' });
-
   const storedHash = process.env.BALPETEGI_HASH;
   const storedSalt = process.env.BALPETEGI_SALT;
   if (!storedHash || !storedSalt) return res.status(500).json({ error: 'Sunucu yapılandırma hatası' });
-
   try {
     const saltBytes = Buffer.from(storedSalt, 'base64');
     const hashBytes = crypto.pbkdf2Sync(sifre, saltBytes, 310000, 64, 'sha512');
@@ -241,10 +206,8 @@ app.post('/balpetegi-degistir', async (req, res) => {
   if (rateLimit(ip, 'balpetegi-degistir', 3, 60 * 1000)) {
     return res.status(429).json({ error: 'Çok fazla deneme.' });
   }
-
   const { eskiSifre, yeniSifre, kozmikToken } = req.body;
   if (!eskiSifre || !yeniSifre || !kozmikToken) return res.status(400).json({ error: 'Eksik bilgi' });
-
   const KOZMIK_PASSWORD_HASH = process.env.KOZMIK_PASSWORD_HASH;
   const KOZMIK_PASSWORD_SALT = process.env.KOZMIK_PASSWORD_SALT;
   let tokenOk = false;
@@ -256,10 +219,8 @@ app.post('/balpetegi-degistir', async (req, res) => {
     tokenOk = kozmikToken === process.env.KOZMIK_PASSWORD;
   }
   if (!tokenOk) return res.status(401).json({ error: 'Yetkisiz' });
-
   const storedHash = process.env.BALPETEGI_HASH;
   const storedSalt = process.env.BALPETEGI_SALT;
-
   try {
     const saltBytes = Buffer.from(storedSalt, 'base64');
     const eskiHashBytes = crypto.pbkdf2Sync(eskiSifre, saltBytes, 310000, 64, 'sha512');
@@ -285,9 +246,7 @@ app.post('/ban-user', async (req, res) => {
   try {
     await db.collection('users').doc(uid).update({ banned: !!banned });
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/shadow-ban', async (req, res) => {
@@ -296,9 +255,7 @@ app.post('/shadow-ban', async (req, res) => {
   try {
     await db.collection('users').doc(uid).update({ shadowBanned: !!shadowBanned });
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/temp-ban', async (req, res) => {
@@ -307,9 +264,7 @@ app.post('/temp-ban', async (req, res) => {
   try {
     await db.collection('users').doc(uid).update({ banExpiry: banExpiry || 0, banned: false });
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/set-badge', async (req, res) => {
@@ -320,29 +275,24 @@ app.post('/set-badge', async (req, res) => {
   try {
     await db.collection('users').doc(uid).update({ badge });
     res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/delete-user', async (req, res) => {
   const { uid, username } = req.body;
   if (!uid || !username) return res.status(400).json({ error: 'uid ve username gerekli' });
-
   try {
     await admin.auth().deleteUser(uid);
     await db.collection('users').doc(uid).delete();
     await db.collection('usernames').doc(username.toLowerCase()).delete();
     await db.collection('friends').doc(username.toLowerCase()).delete();
     await db.collection('blocked').doc(username.toLowerCase()).delete();
-
     const frFrom = await db.collection('friendrequests').where('from', '==', username.toLowerCase()).get();
     const frTo = await db.collection('friendrequests').where('to', '==', username.toLowerCase()).get();
     const frBatch = db.batch();
     frFrom.docs.forEach(d => frBatch.delete(d.ref));
     frTo.docs.forEach(d => frBatch.delete(d.ref));
     await frBatch.commit();
-
     const chatsSnapshot = await db.collection('chats').get();
     for (const chatDoc of chatsSnapshot.docs) {
       if (chatDoc.id.includes(uid)) {
@@ -353,7 +303,6 @@ app.post('/delete-user', async (req, res) => {
         await chatDoc.ref.delete();
       }
     }
-
     const allFriends = await db.collection('friends').get();
     const friendsBatch = db.batch();
     allFriends.docs.forEach(doc => {
@@ -363,7 +312,6 @@ app.post('/delete-user', async (req, res) => {
       }
     });
     await friendsBatch.commit();
-
     const allBlocked = await db.collection('blocked').get();
     const blockedBatch = db.batch();
     allBlocked.docs.forEach(doc => {
@@ -373,10 +321,8 @@ app.post('/delete-user', async (req, res) => {
       }
     });
     await blockedBatch.commit();
-
     try { await cloudinary.api.delete_resources_by_prefix(`yogdzewa/statuses/${uid}`); } catch (_) {}
     await db.collection('pending_users').doc(uid).delete();
-
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -435,7 +381,6 @@ function startListening() {
       });
     });
 
-  // ✅ Yeni aramalar dinle — karşı tarafa FCM gönder
   db.collection('calls')
     .where('status', '==', 'calling')
     .onSnapshot(snapshot => {
@@ -444,11 +389,9 @@ function startListening() {
           const call = change.doc.data();
           const { calleeUid, callerUsername, callId } = call;
           if (!calleeUid || !callerUsername || !callId) return;
-
           const userDoc = await db.collection('users').doc(calleeUid).get();
           const fcmToken = userDoc.data()?.fcmToken;
           if (!fcmToken) return;
-
           try {
             await admin.messaging().send({
               token: fcmToken,
@@ -459,11 +402,7 @@ function startListening() {
               },
               android: {
                 priority: 'high',
-                ttl: 30000
-              },
-              notification: {
-                title: '📞 Gelen Arama',
-                body: `${callerUsername.toUpperCase()} sizi arıyor`
+                ttl: '30000'
               }
             });
           } catch (e) {
@@ -480,7 +419,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Sunucu ${PORT} portunda çalışıyor`);
   startListening();
-
   setInterval(() => {
     https.get('https://yogdzewa-server.onrender.com', (res) => {
       console.log('Keep-alive ping:', res.statusCode);
